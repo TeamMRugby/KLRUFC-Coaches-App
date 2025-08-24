@@ -1,0 +1,94 @@
+import streamlit as st
+import pandas as pd
+from pathlib import Path
+
+st.set_page_config(page_title="Team Coach", layout="wide")
+
+# ---------- 0) simple password gate (for <10 people) ----------
+PASS = st.secrets.get("APP_PASSWORD", "change-me")
+if "authed" not in st.session_state:
+    st.session_state.authed = False
+if not st.session_state.authed:
+    pw = st.text_input("Password", type="password")
+    if st.button("Enter") and pw == PASS:
+        st.session_state.authed = True
+    if not st.session_state.authed:
+        st.stop()
+
+# ---------- 1) query param routing from the iOS tabs ----------
+view = st.query_params.get("view", "dashboard")
+
+# ---------- 2) load your Excel data (replace filenames if needed) ----------
+@st.cache_data
+def load_data():
+    teamsheet = pd.read_excel("Teamsheet u16 final app.xlsx")
+    database = pd.read_excel("Team database inputs.xlsx")
+    return teamsheet, database
+
+teamsheet_df, database_df = load_data()
+
+# ---------- 3) roster.json generator (commit this file to GitHub to fetch from iOS) ----------
+def make_roster_from_database(df: pd.DataFrame) -> pd.DataFrame:
+    # VERY lightweight normalisation – customise if your column names differ
+    cols = {c.lower(): c for c in df.columns}
+    def find(*keys):
+        for k in keys:
+            for lk, orig in cols.items():
+                if k in lk:
+                    return orig
+        return None
+    col_num = find("shirt number", "jersey", "squad number", "number")
+    col_pos = find("position", "role")
+    col_pref = find("preferred name", "known as")
+    col_first = find("first name", "forename")
+    col_last = find("last name", "surname")
+
+    out = []
+    for _, r in df.iterrows():
+        num = r.get(col_num)
+        try:
+            num = int(num) if pd.notna(num) else None
+        except Exception:
+            num = None
+        name = (str(r.get(col_pref)) if col_pref else "") or \
+               (" ".join([str(r.get(col_first) or ""), str(r.get(col_last) or "")]).strip())
+        pos = str(r.get(col_pos) or "")
+        color = "#ff6633" if "forward" in pos.lower() else "#33aaff"  # tweak as you like
+        if name or num:
+            out.append({"shirt_number": num, "name": name, "position": pos or None, "color": color})
+    return pd.DataFrame(out)
+
+with st.expander("Roster • Build from Team database inputs.xlsx"):
+    roster_df = make_roster_from_database(database_df)
+    st.dataframe(roster_df, use_container_width=True)
+    st.download_button("Download roster.json",
+                       roster_df.to_json(orient="table", index=False),
+                       "roster.json",
+                       "application/json")
+
+# ---------- 4) views ----------
+if view == "dashboard":
+    st.header("Dashboard")
+    st.metric("Players in database", len(database_df))
+    st.metric("Teamsheet rows", len(teamsheet_df))
+    st.write("Quick look:", teamsheet_df.head(20))
+
+elif view == "availability":
+    st.header("Availability")
+    name = st.text_input("Player name")
+    status = st.selectbox("This week", ["Available", "Doubtful", "Unavailable"])
+    note = st.text_area("Notes")
+    if st.button("Save (local demo)"):
+        st.success(f"Saved: {name} - {status}")
+        # For production: write to Google Sheet / DB
+
+elif view == "teamsheet":
+    st.header("Teamsheet")
+    st.dataframe(teamsheet_df, use_container_width=True)
+
+elif view == "pitch":
+    st.header("Pitch View")
+    st.write("Use this section for set-piece plans, shapes, or image upload.")
+    st.file_uploader("Upload a tactics board image", type=["png","jpg","jpeg"])
+
+st.caption("Use the Settings tab in the iOS app to point here, e.g. https://your-app.streamlit.app")
